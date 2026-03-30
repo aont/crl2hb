@@ -45,6 +45,14 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Open authorization URL in your default browser automatically.",
     )
+    parser.add_argument(
+        "--callback",
+        default="oob",
+        help=(
+            "OAuth callback URI sent to Hatena during request-token exchange "
+            "(default: oob)."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -69,7 +77,11 @@ def main() -> int:
     args = parse_args()
     consumer_key, consumer_secret = resolve_credentials(args)
 
-    oauth = OAuth1Session(client_key=consumer_key, client_secret=consumer_secret)
+    oauth = OAuth1Session(
+        client_key=consumer_key,
+        client_secret=consumer_secret,
+        callback_uri=args.callback,
+    )
 
     try:
         request_token = oauth.fetch_request_token(REQUEST_TOKEN_URL, params={"scope": args.scope})
