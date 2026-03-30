@@ -19,6 +19,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import time
 from typing import Iterable
 import urllib.parse
 import zipfile
@@ -173,6 +174,30 @@ def add_private_bookmark(
     response.raise_for_status()
 
 
+def add_private_bookmark_with_retry(
+    session: requests.Session,
+    auth: requests_oauthlib.OAuth1,
+    url: str,
+    retries: int = 4,
+) -> None:
+    for attempt in range(retries + 1):
+        try:
+            add_private_bookmark(session, auth, url)
+            return
+        except requests.RequestException:
+            if attempt == retries:
+                raise
+            wait_seconds = attempt + 1
+            logging.warning(
+                "Failed to add bookmark (attempt %d/%d): %s. Retrying in %ds.",
+                attempt + 1,
+                retries + 1,
+                url,
+                wait_seconds,
+            )
+            time.sleep(wait_seconds)
+
+
 def iter_urls_from_new_zips(new_zips: Iterable[Path]) -> tuple[list[str], dict[str, list[str]]]:
     all_urls: list[str] = []
     per_zip: dict[str, list[str]] = {}
@@ -240,7 +265,7 @@ def main() -> int:
                 if args.dry_run:
                     logging.info("[dry-run] would add: %s", url)
                 else:
-                    add_private_bookmark(session, auth, url)
+                    add_private_bookmark_with_retry(session, auth, url)
                     logging.info("Added: %s", url)
                 created += 1
             except requests.HTTPError as exc:
