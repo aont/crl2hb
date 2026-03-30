@@ -23,7 +23,17 @@ pip install requests requests-oauthlib
 
 1. Create a Hatena OAuth app and get consumer key/secret.
 2. Obtain and save access tokens (`oauth_token`, `oauth_token_secret`) into `token.json`.
-   - The referenced gist can be used to bootstrap token acquisition.
+
+   You can use the included helper script:
+
+   ```bash
+   export HATENA_CONSUMER_KEY='your_key'
+   export HATENA_CONSUMER_SECRET='your_secret'
+
+   python get_hatena_token.py --token-file ./token.json --open-browser
+   ```
+
+   The script prints an authorization URL, asks for `oauth_verifier`, and writes `token.json`.
 
 ## Usage
 
