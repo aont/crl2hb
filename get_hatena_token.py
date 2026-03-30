@@ -10,7 +10,7 @@ import sys
 import webbrowser
 from pathlib import Path
 
-from requests_oauthlib import OAuth1Session
+from authlib.integrations.httpx_client import OAuth1Client
 
 REQUEST_TOKEN_URL = "https://www.hatena.com/oauth/initiate"
 AUTHORIZE_URL = "https://www.hatena.ne.jp/oauth/authorize"
@@ -77,15 +77,18 @@ def main() -> int:
     args = parse_args()
     consumer_key, consumer_secret = resolve_credentials(args)
 
-    oauth = OAuth1Session(
-        client_key=consumer_key,
-        client_secret=consumer_secret,
-        callback_uri=args.callback,
-    )
-
     try:
-        request_token = oauth.fetch_request_token(REQUEST_TOKEN_URL, params={"scope": args.scope})
-    except Exception as exc:  # requests-oauthlib raises multiple exception types
+        with OAuth1Client(
+            client_id=consumer_key,
+            client_secret=consumer_secret,
+            redirect_uri=args.callback,
+        ) as oauth:
+            request_token = oauth.fetch_request_token(
+                REQUEST_TOKEN_URL,
+                params={"scope": args.scope},
+            )
+            authorization_url = oauth.create_authorization_url(AUTHORIZE_URL)
+    except Exception as exc:
         raise SystemExit(f"Failed to fetch request token: {exc}") from exc
 
     resource_owner_key = request_token.get("oauth_token")
@@ -93,26 +96,27 @@ def main() -> int:
     if not resource_owner_key or not resource_owner_secret:
         raise SystemExit("Unexpected request token response from Hatena.")
 
-    authorization_url = oauth.authorization_url(AUTHORIZE_URL)
+    auth_url = authorization_url["url"] if isinstance(authorization_url, dict) else str(authorization_url)
     print("Open the following URL and authorize the app:")
-    print(authorization_url)
+    print(auth_url)
     if args.open_browser:
-        webbrowser.open(authorization_url)
+        webbrowser.open(auth_url)
 
     verifier = input("Enter oauth_verifier: ").strip()
     if not verifier:
         raise SystemExit("oauth_verifier is required.")
 
-    authed = OAuth1Session(
-        client_key=consumer_key,
-        client_secret=consumer_secret,
-        resource_owner_key=resource_owner_key,
-        resource_owner_secret=resource_owner_secret,
-        verifier=verifier,
-    )
-
     try:
-        access_token = authed.fetch_access_token(ACCESS_TOKEN_URL)
+        with OAuth1Client(
+            client_id=consumer_key,
+            client_secret=consumer_secret,
+            token={
+                "oauth_token": resource_owner_key,
+                "oauth_token_secret": resource_owner_secret,
+            },
+            verifier=verifier,
+        ) as authed:
+            access_token = authed.fetch_access_token(ACCESS_TOKEN_URL)
     except Exception as exc:
         raise SystemExit(f"Failed to fetch access token: {exc}") from exc
 

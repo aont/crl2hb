@@ -24,8 +24,8 @@ from typing import Iterable
 import urllib.parse
 import zipfile
 
-import requests
-import requests_oauthlib
+import httpx
+from authlib.integrations.httpx_client import OAuth1Auth
 
 HATENA_BOOKMARK_API = "https://bookmark.hatenaapis.com/rest/1/my/bookmark"
 READING_LIST_HTML = "Takeout/Chrome/リーディング リスト.html"
@@ -146,8 +146,8 @@ def normalize_url(raw_url: str) -> str | None:
     return url
 
 
-def make_auth(consumer_key: str, consumer_secret: str, token: dict) -> requests_oauthlib.OAuth1:
-    return requests_oauthlib.OAuth1(
+def make_auth(consumer_key: str, consumer_secret: str, token: dict) -> OAuth1Auth:
+    return OAuth1Auth(
         client_key=consumer_key,
         client_secret=consumer_secret,
         resource_owner_key=token["oauth_token"],
@@ -155,7 +155,7 @@ def make_auth(consumer_key: str, consumer_secret: str, token: dict) -> requests_
     )
 
 
-def is_bookmarked(session: requests.Session, auth: requests_oauthlib.OAuth1, url: str) -> bool:
+def is_bookmarked(session: httpx.Client, auth: OAuth1Auth, url: str) -> bool:
     response = session.get(HATENA_BOOKMARK_API, params={"url": url}, auth=auth, timeout=20)
     if response.status_code == 404:
         return False
@@ -164,8 +164,8 @@ def is_bookmarked(session: requests.Session, auth: requests_oauthlib.OAuth1, url
 
 
 def add_private_bookmark(
-    session: requests.Session,
-    auth: requests_oauthlib.OAuth1,
+    session: httpx.Client,
+    auth: OAuth1Auth,
     url: str,
     comment: str = DEFAULT_COMMENT,
 ) -> None:
@@ -175,8 +175,8 @@ def add_private_bookmark(
 
 
 def add_private_bookmark_with_retry(
-    session: requests.Session,
-    auth: requests_oauthlib.OAuth1,
+    session: httpx.Client,
+    auth: OAuth1Auth,
     url: str,
     retries: int = 4,
 ) -> None:
@@ -184,7 +184,7 @@ def add_private_bookmark_with_retry(
         try:
             add_private_bookmark(session, auth, url)
             return
-        except requests.RequestException:
+        except httpx.RequestError:
             if attempt == retries:
                 raise
             wait_seconds = attempt + 1
@@ -254,7 +254,7 @@ def main() -> int:
     created = 0
     skipped_existing = 0
 
-    with requests.Session() as session:
+    with httpx.Client() as session:
         for url in urls:
             try:
                 if is_bookmarked(session, auth, url):
@@ -268,7 +268,7 @@ def main() -> int:
                     add_private_bookmark_with_retry(session, auth, url)
                     logging.info("Added: %s", url)
                 created += 1
-            except requests.HTTPError as exc:
+            except httpx.HTTPError as exc:
                 logging.error("Failed for %s: %s", url, exc)
 
     # Mark all discovered ZIPs as processed even if they had no reading-list file.
