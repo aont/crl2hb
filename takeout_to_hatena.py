@@ -206,7 +206,7 @@ def is_bookmarked_with_retry(
     for attempt in range(retries + 1):
         try:
             return is_bookmarked(session, auth, url)
-        except httpx.RequestError:
+        except (httpx.RequestError, httpx.HTTPError):
             if attempt == retries:
                 raise
             wait_seconds = attempt + 1
@@ -242,7 +242,7 @@ def add_private_bookmark_with_retry(
         try:
             add_private_bookmark(session, auth, url)
             return
-        except httpx.RequestError:
+        except (httpx.RequestError, httpx.HTTPError):
             if attempt == retries:
                 raise
             wait_seconds = attempt + 1
