@@ -197,6 +197,30 @@ def is_bookmarked(session: httpx.Client, auth: OAuth1Auth, url: str) -> bool:
     return True
 
 
+def is_bookmarked_with_retry(
+    session: httpx.Client,
+    auth: OAuth1Auth,
+    url: str,
+    retries: int = 4,
+) -> bool:
+    for attempt in range(retries + 1):
+        try:
+            return is_bookmarked(session, auth, url)
+        except httpx.RequestError:
+            if attempt == retries:
+                raise
+            wait_seconds = attempt + 1
+            logging.warning(
+                "Failed to check bookmark (attempt %d/%d): %s. Retrying in %ds.",
+                attempt + 1,
+                retries + 1,
+                url,
+                wait_seconds,
+            )
+            time.sleep(wait_seconds)
+    raise RuntimeError("Unreachable: retry loop exhausted without return or raise")
+
+
 def add_private_bookmark(
     session: httpx.Client,
     auth: OAuth1Auth,
@@ -301,7 +325,7 @@ def main() -> int:
                     logging.debug("Skip known bookmarked URL: %s", url)
                     continue
 
-                if is_bookmarked(session, auth, url):
+                if is_bookmarked_with_retry(session, auth, url):
                     remember_bookmarked_url(state_db, url)
                     skipped_existing += 1
                     logging.debug("Skip existing: %s", url)
