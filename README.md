@@ -11,7 +11,9 @@
   - comment: `[Read later]`
   - visibility: private (`private=1`)
 - Skips URLs that are already bookmarked.
-- Persists processed ZIP signatures in `.takeout_to_hatena_state.json`.
+- Persists state in `.takeout_to_hatena_state.sqlite3`, including:
+  - processed ZIP signatures
+  - URLs confirmed as bookmarked (already existing or newly added)
 
 ## Requirements
 
@@ -44,6 +46,12 @@ export HATENA_CONSUMER_SECRET='your_secret'
 python takeout_to_hatena.py \
   --takeout-dir /path/to/gdrive/Takeout \
   --token-file ./token.json
+```
+
+Custom state DB path:
+
+```bash
+python takeout_to_hatena.py --takeout-dir /path/to/gdrive/Takeout --state-db ./state.sqlite3
 ```
 
 Dry run:

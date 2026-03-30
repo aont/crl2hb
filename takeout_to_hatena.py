@@ -19,6 +19,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import sqlite3
 import time
 from typing import Iterable
 import urllib.parse
@@ -73,10 +74,10 @@ def parse_args() -> argparse.Namespace:
         help="Hatena OAuth consumer secret (defaults to HATENA_CONSUMER_SECRET env if set).",
     )
     parser.add_argument(
-        "--state-file",
+        "--state-db",
         type=Path,
-        default=Path(".takeout_to_hatena_state.json"),
-        help="State file tracking already processed ZIP files.",
+        default=Path(".takeout_to_hatena_state.sqlite3"),
+        help="SQLite DB tracking processed ZIP signatures and known bookmarked URLs.",
     )
     parser.add_argument("--dry-run", action="store_true", help="Do not write to Hatena.")
     parser.add_argument("--verbose", action="store_true", help="Verbose logging.")
@@ -90,10 +91,44 @@ def load_json(path: Path, default: dict) -> dict:
         return json.load(fp)
 
 
-def save_json(path: Path, value: dict) -> None:
+def open_state_db(path: Path) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as fp:
-        json.dump(value, fp, ensure_ascii=False, indent=2)
+    conn = sqlite3.connect(path)
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS processed_zip_signatures ("
+        " signature TEXT PRIMARY KEY"
+        ")"
+    )
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS known_bookmarked_urls ("
+        " url TEXT PRIMARY KEY"
+        ")"
+    )
+    conn.commit()
+    return conn
+
+
+def load_processed_zip_signatures(conn: sqlite3.Connection) -> set[str]:
+    rows = conn.execute("SELECT signature FROM processed_zip_signatures").fetchall()
+    return {row[0] for row in rows}
+
+
+def save_processed_zip_signatures(conn: sqlite3.Connection, signatures: Iterable[str]) -> None:
+    conn.executemany(
+        "INSERT OR IGNORE INTO processed_zip_signatures(signature) VALUES (?)",
+        ((sig,) for sig in signatures),
+    )
+    conn.commit()
+
+
+def is_known_bookmarked_url(conn: sqlite3.Connection, url: str) -> bool:
+    row = conn.execute("SELECT 1 FROM known_bookmarked_urls WHERE url = ?", (url,)).fetchone()
+    return row is not None
+
+
+def remember_bookmarked_url(conn: sqlite3.Connection, url: str) -> None:
+    conn.execute("INSERT OR IGNORE INTO known_bookmarked_urls(url) VALUES (?)", (url,))
+    conn.commit()
 
 
 def zip_signature(path: Path) -> str:
@@ -101,8 +136,7 @@ def zip_signature(path: Path) -> str:
     return f"{path.resolve()}::{stat.st_size}::{int(stat.st_mtime)}"
 
 
-def discover_new_takeout_zips(takeout_dir: Path, state: dict) -> list[Path]:
-    processed = set(state.get("processed_zip_signatures", []))
+def discover_new_takeout_zips(takeout_dir: Path, processed: set[str]) -> list[Path]:
     result: list[Path] = []
     for zpath in sorted(takeout_dir.glob("takeout-*.zip")):
         sig = zip_signature(zpath)
@@ -234,11 +268,12 @@ def main() -> int:
     if "oauth_token" not in token or "oauth_token_secret" not in token:
         raise SystemExit(f"Invalid token file: {args.token_file}")
 
-    state = load_json(args.state_file, default={"processed_zip_signatures": []})
-
-    new_zips = discover_new_takeout_zips(args.takeout_dir, state)
+    state_db = open_state_db(args.state_db)
+    processed_zip_signatures = load_processed_zip_signatures(state_db)
+    new_zips = discover_new_takeout_zips(args.takeout_dir, processed_zip_signatures)
     if not new_zips:
         logging.info("No new ZIP files found in %s", args.takeout_dir)
+        state_db.close()
         return 0
 
     urls, details = iter_urls_from_new_zips(new_zips)
@@ -257,7 +292,13 @@ def main() -> int:
     with httpx.Client() as session:
         for url in urls:
             try:
+                if is_known_bookmarked_url(state_db, url):
+                    skipped_existing += 1
+                    logging.debug("Skip known bookmarked URL: %s", url)
+                    continue
+
                 if is_bookmarked(session, auth, url):
+                    remember_bookmarked_url(state_db, url)
                     skipped_existing += 1
                     logging.debug("Skip existing: %s", url)
                     continue
@@ -266,17 +307,18 @@ def main() -> int:
                     logging.info("[dry-run] would add: %s", url)
                 else:
                     add_private_bookmark_with_retry(session, auth, url)
+                    remember_bookmarked_url(state_db, url)
                     logging.info("Added: %s", url)
                 created += 1
             except httpx.HTTPError as exc:
                 logging.error("Failed for %s: %s", url, exc)
 
     # Mark all discovered ZIPs as processed even if they had no reading-list file.
-    processed = set(state.get("processed_zip_signatures", []))
+    processed = set(processed_zip_signatures)
     for zpath in new_zips:
         processed.add(zip_signature(zpath))
-    state["processed_zip_signatures"] = sorted(processed)
-    save_json(args.state_file, state)
+    save_processed_zip_signatures(state_db, processed)
+    state_db.close()
 
     logging.info("Done. created=%d skipped_existing=%d", created, skipped_existing)
     return 0
