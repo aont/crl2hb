@@ -25,7 +25,10 @@ import urllib.parse
 import zipfile
 
 import aiohttp
-from authlib.oauth1.rfc5849 import Client as OAuth1Client
+try:
+    from authlib.oauth1.rfc5849 import Client as OAuth1Client
+except ImportError:
+    from authlib.oauth1.rfc5849 import ClientAuth as OAuth1Client
 
 HATENA_BOOKMARK_API = "https://bookmark.hatenaapis.com/rest/1/my/bookmark"
 READING_LIST_HTML = "Takeout/Chrome/リーディング リスト.html"
@@ -157,7 +160,10 @@ def make_auth(consumer_key: str, consumer_secret: str, token: dict) -> OAuth1Cli
 
 def signed_endpoint(auth: OAuth1Client, method: str, url: str, params: dict[str, str]) -> tuple[str, dict]:
     endpoint = f"{url}?{urllib.parse.urlencode(params)}"
-    signed_uri, signed_headers, _ = auth.sign(endpoint, http_method=method)
+    if hasattr(auth, "prepare"):
+        signed_uri, signed_headers, _ = auth.prepare(method, endpoint, {}, None)
+    else:
+        signed_uri, signed_headers, _ = auth.sign(endpoint, http_method=method)
     return signed_uri, signed_headers
 
 

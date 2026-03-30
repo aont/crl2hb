@@ -13,7 +13,10 @@ import webbrowser
 from pathlib import Path
 
 import aiohttp
-from authlib.oauth1.rfc5849 import Client as OAuth1Client
+try:
+    from authlib.oauth1.rfc5849 import Client as OAuth1Client
+except ImportError:
+    from authlib.oauth1.rfc5849 import ClientAuth as OAuth1Client
 
 REQUEST_TOKEN_URL = "https://www.hatena.com/oauth/initiate"
 AUTHORIZE_URL = "https://www.hatena.ne.jp/oauth/authorize"
@@ -107,7 +110,10 @@ async def request_oauth_form(
     query: dict[str, str] | None = None,
 ) -> dict[str, str]:
     endpoint = f"{url}?{urllib.parse.urlencode(query)}" if query else url
-    signed_uri, signed_headers, _ = oauth.sign(endpoint, http_method=method)
+    if hasattr(oauth, "prepare"):
+        signed_uri, signed_headers, _ = oauth.prepare(method, endpoint, {}, None)
+    else:
+        signed_uri, signed_headers, _ = oauth.sign(endpoint, http_method=method)
     async with session.request(method, signed_uri, headers=signed_headers) as response:
         text = await response.text()
         if response.status >= 400:
