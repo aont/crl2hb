@@ -255,6 +255,10 @@ def main() -> int:
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s [%(levelname)s] %(message)s",
     )
+    # Hide noisy request-line logs such as `HTTP Request: ...` unless explicitly verbose.
+    if not args.verbose:
+        logging.getLogger("httpx").setLevel(logging.WARNING)
+        logging.getLogger("httpcore").setLevel(logging.WARNING)
 
     consumer_key = args.consumer_key or os.getenv("HATENA_CONSUMER_KEY", "")
     consumer_secret = args.consumer_secret or os.getenv("HATENA_CONSUMER_SECRET", "")
