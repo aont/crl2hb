@@ -16,7 +16,7 @@
 ## Requirements
 
 ```bash
-pip install requests requests-oauthlib
+pip install aiohttp Authlib
 ```
 
 ## OAuth setup

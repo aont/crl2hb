@@ -14,18 +14,18 @@ This script requires a pre-generated OAuth token JSON file for Hatena.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import html.parser
 import json
 import logging
 import os
 from pathlib import Path
-import time
 from typing import Iterable
 import urllib.parse
 import zipfile
 
-import requests
-import requests_oauthlib
+import aiohttp
+from authlib.oauth1.rfc5849 import Client as OAuth1Client
 
 HATENA_BOOKMARK_API = "https://bookmark.hatenaapis.com/rest/1/my/bookmark"
 READING_LIST_HTML = "Takeout/Chrome/リーディング リスト.html"
@@ -146,45 +146,53 @@ def normalize_url(raw_url: str) -> str | None:
     return url
 
 
-def make_auth(consumer_key: str, consumer_secret: str, token: dict) -> requests_oauthlib.OAuth1:
-    return requests_oauthlib.OAuth1(
-        client_key=consumer_key,
+def make_auth(consumer_key: str, consumer_secret: str, token: dict) -> OAuth1Client:
+    return OAuth1Client(
+        client_id=consumer_key,
         client_secret=consumer_secret,
-        resource_owner_key=token["oauth_token"],
-        resource_owner_secret=token["oauth_token_secret"],
+        token=token["oauth_token"],
+        token_secret=token["oauth_token_secret"],
     )
 
 
-def is_bookmarked(session: requests.Session, auth: requests_oauthlib.OAuth1, url: str) -> bool:
-    response = session.get(HATENA_BOOKMARK_API, params={"url": url}, auth=auth, timeout=20)
-    if response.status_code == 404:
-        return False
-    response.raise_for_status()
-    return True
+def signed_endpoint(auth: OAuth1Client, method: str, url: str, params: dict[str, str]) -> tuple[str, dict]:
+    endpoint = f"{url}?{urllib.parse.urlencode(params)}"
+    signed_uri, signed_headers, _ = auth.sign(endpoint, http_method=method)
+    return signed_uri, signed_headers
 
 
-def add_private_bookmark(
-    session: requests.Session,
-    auth: requests_oauthlib.OAuth1,
+async def is_bookmarked(session: aiohttp.ClientSession, auth: OAuth1Client, url: str) -> bool:
+    endpoint, headers = signed_endpoint(auth, "GET", HATENA_BOOKMARK_API, {"url": url})
+    async with session.get(endpoint, headers=headers) as response:
+        if response.status == 404:
+            return False
+        response.raise_for_status()
+        return True
+
+
+async def add_private_bookmark(
+    session: aiohttp.ClientSession,
+    auth: OAuth1Client,
     url: str,
     comment: str = DEFAULT_COMMENT,
 ) -> None:
     params = {"url": url, "comment": comment, "private": "1"}
-    response = session.post(HATENA_BOOKMARK_API, params=params, auth=auth, timeout=20)
-    response.raise_for_status()
+    endpoint, headers = signed_endpoint(auth, "POST", HATENA_BOOKMARK_API, params)
+    async with session.post(endpoint, headers=headers) as response:
+        response.raise_for_status()
 
 
-def add_private_bookmark_with_retry(
-    session: requests.Session,
-    auth: requests_oauthlib.OAuth1,
+async def add_private_bookmark_with_retry(
+    session: aiohttp.ClientSession,
+    auth: OAuth1Client,
     url: str,
     retries: int = 4,
 ) -> None:
     for attempt in range(retries + 1):
         try:
-            add_private_bookmark(session, auth, url)
+            await add_private_bookmark(session, auth, url)
             return
-        except requests.RequestException:
+        except aiohttp.ClientError:
             if attempt == retries:
                 raise
             wait_seconds = attempt + 1
@@ -195,7 +203,7 @@ def add_private_bookmark_with_retry(
                 url,
                 wait_seconds,
             )
-            time.sleep(wait_seconds)
+            await asyncio.sleep(wait_seconds)
 
 
 def iter_urls_from_new_zips(new_zips: Iterable[Path]) -> tuple[list[str], dict[str, list[str]]]:
@@ -215,7 +223,7 @@ def iter_urls_from_new_zips(new_zips: Iterable[Path]) -> tuple[list[str], dict[s
     return deduped, per_zip
 
 
-def main() -> int:
+async def async_main() -> int:
     args = parse_args()
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
@@ -254,10 +262,11 @@ def main() -> int:
     created = 0
     skipped_existing = 0
 
-    with requests.Session() as session:
+    timeout = aiohttp.ClientTimeout(total=20)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
         for url in urls:
             try:
-                if is_bookmarked(session, auth, url):
+                if await is_bookmarked(session, auth, url):
                     skipped_existing += 1
                     logging.debug("Skip existing: %s", url)
                     continue
@@ -265,10 +274,10 @@ def main() -> int:
                 if args.dry_run:
                     logging.info("[dry-run] would add: %s", url)
                 else:
-                    add_private_bookmark_with_retry(session, auth, url)
+                    await add_private_bookmark_with_retry(session, auth, url)
                     logging.info("Added: %s", url)
                 created += 1
-            except requests.HTTPError as exc:
+            except aiohttp.ClientResponseError as exc:
                 logging.error("Failed for %s: %s", url, exc)
 
     # Mark all discovered ZIPs as processed even if they had no reading-list file.
@@ -283,4 +292,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(asyncio.run(async_main()))
