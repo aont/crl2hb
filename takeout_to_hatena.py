@@ -27,8 +27,8 @@ import requests
 import requests_oauthlib
 
 HATENA_BOOKMARK_API = "https://bookmark.hatenaapis.com/rest/1/my/bookmark"
-READING_LIST_HTML = "takeout/Chrome/リーディング リスト.html"
-DEFAULT_COMMENT = "[Read later]"
+READING_LIST_HTML = "Takeout/Chrome/リーディング リスト.html"
+DEFAULT_COMMENT = "[あとで読む]"
 
 
 class AnchorExtractor(html.parser.HTMLParser):
