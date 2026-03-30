@@ -6,7 +6,11 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import socket
 import sys
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from urllib.parse import parse_qs, urlparse
 import webbrowser
 from pathlib import Path
 
@@ -45,14 +49,6 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Open authorization URL in your default browser automatically.",
     )
-    parser.add_argument(
-        "--callback",
-        default="oob",
-        help=(
-            "OAuth callback URI sent to Hatena during request-token exchange "
-            "(default: oob)."
-        ),
-    )
     return parser.parse_args()
 
 
@@ -73,14 +69,66 @@ def save_token(path: Path, token: dict[str, str]) -> None:
         json.dump(token, fp, ensure_ascii=False, indent=2)
 
 
+def find_free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
+def wait_for_oauth_verifier(port: int) -> str:
+    verifier_holder: dict[str, str] = {}
+    done = threading.Event()
+
+    class CallbackHandler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802
+            query = parse_qs(urlparse(self.path).query)
+            verifier = query.get("oauth_verifier", [""])[0]
+            if verifier:
+                verifier_holder["oauth_verifier"] = verifier
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(
+                    b"<html><body><h1>Authorization complete.</h1>"
+                    b"<p>You can close this window.</p></body></html>"
+                )
+                done.set()
+                return
+
+            self.send_response(400)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(b"Missing oauth_verifier in callback query.")
+
+        def log_message(self, format: str, *args: object) -> None:
+            return
+
+    httpd = HTTPServer(("127.0.0.1", port), CallbackHandler)
+    server_thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    server_thread.start()
+    try:
+        done.wait()
+    finally:
+        httpd.shutdown()
+        server_thread.join()
+        httpd.server_close()
+
+    verifier = verifier_holder.get("oauth_verifier", "")
+    if not verifier:
+        raise SystemExit("Failed to receive oauth_verifier from callback.")
+    return verifier
+
+
 def main() -> int:
     args = parse_args()
     consumer_key, consumer_secret = resolve_credentials(args)
+    callback_port = find_free_port()
+    callback_uri = f"http://127.0.0.1:{callback_port}/callback"
 
     oauth = OAuth1Session(
         client_key=consumer_key,
         client_secret=consumer_secret,
-        callback_uri=args.callback,
+        callback_uri=callback_uri,
     )
 
     try:
@@ -99,9 +147,8 @@ def main() -> int:
     if args.open_browser:
         webbrowser.open(authorization_url)
 
-    verifier = input("Enter oauth_verifier: ").strip()
-    if not verifier:
-        raise SystemExit("oauth_verifier is required.")
+    print(f"Waiting for callback on {callback_uri} ...")
+    verifier = wait_for_oauth_verifier(callback_port)
 
     authed = OAuth1Session(
         client_key=consumer_key,
