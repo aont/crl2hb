@@ -148,10 +148,10 @@ def normalize_url(raw_url: str) -> str | None:
 
 def make_auth(consumer_key: str, consumer_secret: str, token: dict) -> OAuth1Auth:
     return OAuth1Auth(
-        client_key=consumer_key,
+        client_id=consumer_key,
         client_secret=consumer_secret,
-        resource_owner_key=token["oauth_token"],
-        resource_owner_secret=token["oauth_token_secret"],
+        token=token["oauth_token"],
+        token_secret=token["oauth_token_secret"],
     )
 
 
