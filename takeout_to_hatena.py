@@ -2,19 +2,22 @@
 """Import Google Takeout Reading List bookmarks into Hatena Bookmark.
 
 Workflow:
-1. Scan mounted Google Drive for new takeout ZIP files matching takeout-*.zip.
-2. Read /takeout/Chrome/リーディング リスト.html from each ZIP.
+1. List new takeout ZIP files from a Google Drive folder via Drive API.
+2. Download each ZIP and read /Takeout/Chrome/リーディング リスト.html.
 3. Extract links from <A HREF="...">title</A> entries.
-4. Add each URL to Hatena Bookmark as private with comment "[Read later]".
+4. Add each URL to Hatena Bookmark as private with comment "[あとで読む]".
 5. Skip URLs already bookmarked in Hatena.
 
-This script requires a pre-generated OAuth token JSON file for Hatena.
+This script requires:
+- a pre-generated Hatena OAuth token JSON file
+- a Google OAuth token JSON file with Drive read permissions
 """
 
 from __future__ import annotations
 
 import argparse
 import html.parser
+import io
 import json
 import logging
 import os
@@ -31,6 +34,8 @@ from authlib.integrations.httpx_client import OAuth1Auth
 HATENA_BOOKMARK_API = "https://bookmark.hatenaapis.com/rest/1/my/bookmark"
 READING_LIST_HTML = "Takeout/Chrome/リーディング リスト.html"
 DEFAULT_COMMENT = "[あとで読む]"
+GOOGLE_DRIVE_FILES_API = "https://www.googleapis.com/drive/v3/files"
+GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 
 
 class AnchorExtractor(html.parser.HTMLParser):
@@ -52,10 +57,25 @@ class AnchorExtractor(html.parser.HTMLParser):
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--takeout-dir",
+        "--drive-folder-id",
+        required=True,
+        help="Google Drive folder ID that contains takeout-*.zip files.",
+    )
+    parser.add_argument(
+        "--google-token-file",
         type=Path,
-        default=Path("/path/to/gdrive/Takeout"),
-        help="Directory containing takeout-*.zip files.",
+        default=Path("google_token.json"),
+        help="Path to Google OAuth token JSON.",
+    )
+    parser.add_argument(
+        "--google-client-id",
+        default=None,
+        help="Google OAuth client ID (defaults to GOOGLE_CLIENT_ID env if set).",
+    )
+    parser.add_argument(
+        "--google-client-secret",
+        default=None,
+        help="Google OAuth client secret (defaults to GOOGLE_CLIENT_SECRET env if set).",
     )
     parser.add_argument(
         "--token-file",
@@ -89,6 +109,12 @@ def load_json(path: Path, default: dict) -> dict:
         return default
     with path.open("r", encoding="utf-8") as fp:
         return json.load(fp)
+
+
+def save_json(path: Path, data: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as fp:
+        json.dump(data, fp, ensure_ascii=False, indent=2)
 
 
 def open_state_db(path: Path) -> sqlite3.Connection:
@@ -129,45 +155,6 @@ def is_known_bookmarked_url(conn: sqlite3.Connection, url: str) -> bool:
 def remember_bookmarked_url(conn: sqlite3.Connection, url: str) -> None:
     conn.execute("INSERT OR IGNORE INTO known_bookmarked_urls(url) VALUES (?)", (url,))
     conn.commit()
-
-
-def zip_signature(path: Path) -> str:
-    stat = path.stat()
-    return f"{path.resolve()}::{stat.st_size}::{int(stat.st_mtime)}"
-
-
-def discover_new_takeout_zips(takeout_dir: Path, processed: set[str]) -> list[Path]:
-    result: list[Path] = []
-    for zpath in sorted(takeout_dir.glob("takeout-*.zip")):
-        sig = zip_signature(zpath)
-        if sig not in processed:
-            result.append(zpath)
-    return result
-
-
-def extract_urls_from_zip(zpath: Path) -> list[str]:
-    with zipfile.ZipFile(zpath) as zf:
-        try:
-            content = zf.read(READING_LIST_HTML)
-        except KeyError:
-            logging.warning("%s does not contain %s", zpath, READING_LIST_HTML)
-            return []
-
-    html_text = content.decode("utf-8", errors="replace")
-    parser = AnchorExtractor()
-    parser.feed(html_text)
-
-    unique_urls: list[str] = []
-    seen: set[str] = set()
-    for raw_url in parser.urls:
-        norm = normalize_url(raw_url)
-        if not norm:
-            continue
-        if norm in seen:
-            continue
-        seen.add(norm)
-        unique_urls.append(norm)
-    return unique_urls
 
 
 def normalize_url(raw_url: str) -> str | None:
@@ -256,13 +243,154 @@ def add_private_bookmark_with_retry(
             time.sleep(wait_seconds)
 
 
-def iter_urls_from_new_zips(new_zips: Iterable[Path]) -> tuple[list[str], dict[str, list[str]]]:
+def extract_urls_from_zip_bytes(zip_bytes: bytes, label: str) -> list[str]:
+    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+        try:
+            content = zf.read(READING_LIST_HTML)
+        except KeyError:
+            logging.warning("%s does not contain %s", label, READING_LIST_HTML)
+            return []
+
+    html_text = content.decode("utf-8", errors="replace")
+    parser = AnchorExtractor()
+    parser.feed(html_text)
+
+    unique_urls: list[str] = []
+    seen: set[str] = set()
+    for raw_url in parser.urls:
+        norm = normalize_url(raw_url)
+        if not norm:
+            continue
+        if norm in seen:
+            continue
+        seen.add(norm)
+        unique_urls.append(norm)
+    return unique_urls
+
+
+def ensure_google_access_token(
+    session: httpx.Client,
+    token: dict,
+    client_id: str,
+    client_secret: str,
+    token_file: Path,
+) -> str:
+    access_token = token.get("access_token")
+    expires_at = token.get("expires_at")
+    now = int(time.time())
+
+    if access_token and isinstance(expires_at, (int, float)) and now < int(expires_at) - 60:
+        return access_token
+    if access_token and expires_at is None:
+        return access_token
+
+    refresh_token = token.get("refresh_token")
+    if not refresh_token:
+        raise SystemExit(
+            "Google access token is expired and refresh_token is missing. "
+            "Re-run get_google_token.py with prompt=consent."
+        )
+
+    response = session.post(
+        GOOGLE_TOKEN_URL,
+        data={
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "refresh_token": refresh_token,
+            "grant_type": "refresh_token",
+        },
+        timeout=20,
+    )
+    response.raise_for_status()
+    refreshed = response.json()
+
+    token["access_token"] = refreshed["access_token"]
+    token["token_type"] = refreshed.get("token_type", token.get("token_type", "Bearer"))
+    if "expires_in" in refreshed:
+        token["expires_at"] = int(time.time()) + int(refreshed["expires_in"])
+    if "refresh_token" in refreshed:
+        token["refresh_token"] = refreshed["refresh_token"]
+
+    save_json(token_file, token)
+    return token["access_token"]
+
+
+def drive_file_signature(item: dict) -> str:
+    return "::".join(
+        [
+            item.get("id", ""),
+            str(item.get("size", "")),
+            item.get("md5Checksum", ""),
+            item.get("modifiedTime", ""),
+        ]
+    )
+
+
+def list_takeout_zip_files(
+    session: httpx.Client,
+    access_token: str,
+    folder_id: str,
+) -> list[dict]:
+    files: list[dict] = []
+    page_token: str | None = None
+    headers = {"Authorization": f"Bearer {access_token}"}
+
+    while True:
+        query = (
+            f"'{folder_id}' in parents and trashed = false "
+            "and mimeType = 'application/zip' and name contains 'takeout-'"
+        )
+        params = {
+            "q": query,
+            "fields": "nextPageToken, files(id,name,size,md5Checksum,modifiedTime)",
+            "orderBy": "modifiedTime desc",
+            "pageSize": "100",
+        }
+        if page_token:
+            params["pageToken"] = page_token
+
+        response = session.get(
+            GOOGLE_DRIVE_FILES_API,
+            params=params,
+            headers=headers,
+            timeout=20,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        files.extend(payload.get("files", []))
+        page_token = payload.get("nextPageToken")
+        if not page_token:
+            break
+
+    return files
+
+
+def download_drive_file(session: httpx.Client, access_token: str, file_id: str) -> bytes:
+    headers = {"Authorization": f"Bearer {access_token}"}
+    response = session.get(
+        f"{GOOGLE_DRIVE_FILES_API}/{file_id}",
+        params={"alt": "media"},
+        headers=headers,
+        timeout=60,
+    )
+    response.raise_for_status()
+    return response.content
+
+
+def iter_urls_from_new_drive_zips(
+    session: httpx.Client,
+    access_token: str,
+    new_files: Iterable[dict],
+) -> tuple[list[str], dict[str, list[str]]]:
     all_urls: list[str] = []
     per_zip: dict[str, list[str]] = {}
-    for zpath in new_zips:
-        urls = extract_urls_from_zip(zpath)
-        per_zip[str(zpath)] = urls
+    for item in new_files:
+        file_label = f"{item.get('name', '(unknown)')} ({item.get('id', '-')})"
+        zip_bytes = download_drive_file(session, access_token, item["id"])
+        urls = extract_urls_from_zip_bytes(zip_bytes, file_label)
+        per_zip[file_label] = urls
         all_urls.extend(urls)
+
     deduped: list[str] = []
     seen: set[str] = set()
     for url in all_urls:
@@ -279,7 +407,6 @@ def main() -> int:
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s [%(levelname)s] %(message)s",
     )
-    # Hide noisy request-line logs such as `HTTP Request: ...` unless explicitly verbose.
     if not args.verbose:
         logging.getLogger("httpx").setLevel(logging.WARNING)
         logging.getLogger("httpcore").setLevel(logging.WARNING)
@@ -289,35 +416,59 @@ def main() -> int:
     if not consumer_key or not consumer_secret:
         raise SystemExit(
             "Missing consumer key/secret. Pass --consumer-key/--consumer-secret "
-            "or set via wrapper/environment."
+            "or set HATENA_CONSUMER_KEY/HATENA_CONSUMER_SECRET."
+        )
+
+    google_client_id = args.google_client_id or os.getenv("GOOGLE_CLIENT_ID", "")
+    google_client_secret = args.google_client_secret or os.getenv("GOOGLE_CLIENT_SECRET", "")
+    if not google_client_id or not google_client_secret:
+        raise SystemExit(
+            "Missing Google client ID/secret. Pass --google-client-id/--google-client-secret "
+            "or set GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET."
         )
 
     token = load_json(args.token_file, default={})
     if "oauth_token" not in token or "oauth_token_secret" not in token:
-        raise SystemExit(f"Invalid token file: {args.token_file}")
+        raise SystemExit(f"Invalid Hatena token file: {args.token_file}")
+
+    google_token = load_json(args.google_token_file, default={})
+    if "access_token" not in google_token and "refresh_token" not in google_token:
+        raise SystemExit(
+            f"Invalid Google token file: {args.google_token_file}. "
+            "Run get_google_token.py first."
+        )
 
     state_db = open_state_db(args.state_db)
     processed_zip_signatures = load_processed_zip_signatures(state_db)
-    new_zips = discover_new_takeout_zips(args.takeout_dir, processed_zip_signatures)
-    if not new_zips:
-        logging.info("No new ZIP files found in %s", args.takeout_dir)
-        state_db.close()
-        return 0
-
-    urls, details = iter_urls_from_new_zips(new_zips)
-    for zpath, zurls in details.items():
-        logging.info("%s: extracted %d URL(s)", zpath, len(zurls))
-
-    if not urls:
-        logging.info("No valid HTTP(S) URLs extracted from new ZIP files.")
-    else:
-        logging.info("Total unique URLs to evaluate: %d", len(urls))
 
     auth = make_auth(consumer_key, consumer_secret, token)
     created = 0
     skipped_existing = 0
 
     with httpx.Client() as session:
+        access_token = ensure_google_access_token(
+            session,
+            google_token,
+            google_client_id,
+            google_client_secret,
+            args.google_token_file,
+        )
+        all_files = list_takeout_zip_files(session, access_token, args.drive_folder_id)
+        new_files = [f for f in all_files if drive_file_signature(f) not in processed_zip_signatures]
+        if not new_files:
+            logging.info("No new takeout ZIP files found in Drive folder %s", args.drive_folder_id)
+            state_db.close()
+            return 0
+
+        urls, details = iter_urls_from_new_drive_zips(session, access_token, new_files)
+        for file_label, zurls in details.items():
+            logging.info("%s: extracted %d URL(s)", file_label, len(zurls))
+
+        if not urls:
+            logging.info("No valid HTTP(S) URLs extracted from new ZIP files.")
+        else:
+            logging.info("Total unique URLs to evaluate: %d", len(urls))
+
         for url in urls:
             try:
                 if is_known_bookmarked_url(state_db, url):
@@ -341,10 +492,9 @@ def main() -> int:
             except httpx.HTTPError as exc:
                 logging.error("Failed for %s: %s", url, exc)
 
-    # Mark all discovered ZIPs as processed even if they had no reading-list file.
     processed = set(processed_zip_signatures)
-    for zpath in new_zips:
-        processed.add(zip_signature(zpath))
+    for item in new_files:
+        processed.add(drive_file_signature(item))
     save_processed_zip_signatures(state_db, processed)
     state_db.close()
 

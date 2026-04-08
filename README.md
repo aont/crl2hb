@@ -1,14 +1,15 @@
 # takeout_to_hatena
 
-`takeout_to_hatena.py` scans Google Takeout ZIP files and imports Chrome Reading List URLs into Hatena Bookmark.
+`takeout_to_hatena.py` fetches Google Takeout ZIP files from Google Drive API and imports Chrome Reading List URLs into Hatena Bookmark.
 
 ## What it does
 
-- Looks for new ZIP files matching `takeout-*.zip` under a mounted Google Drive Takeout directory.
-- Reads `takeout/Chrome/リーディング リスト.html` inside each ZIP.
+- Lists ZIP files matching `takeout-*.zip` from a specified Google Drive folder.
+- Downloads each new ZIP directly through Google Drive API.
+- Reads `Takeout/Chrome/リーディング リスト.html` inside each ZIP.
 - Extracts URLs from `<A HREF="...">...</A>`.
 - Adds each URL to Hatena Bookmark with:
-  - comment: `[Read later]`
+  - comment: `[あとで読む]`
   - visibility: private (`private=1`)
 - Skips URLs that are already bookmarked.
 - Persists state in `.takeout_to_hatena_state.sqlite3`, including:
@@ -23,39 +24,63 @@ pip install httpx Authlib
 
 ## OAuth setup
 
+### 1) Hatena OAuth token
+
 1. Create a Hatena OAuth app and get consumer key/secret.
 2. Obtain and save access tokens (`oauth_token`, `oauth_token_secret`) into `token.json`.
-
-   You can use the included helper script:
-
-   ```bash
-   export HATENA_CONSUMER_KEY='your_key'
-   export HATENA_CONSUMER_SECRET='your_secret'
-
-   python get_hatena_token.py --token-file ./token.json --open-browser
-   ```
-
-   The script prints an authorization URL, asks for `oauth_verifier`, and writes `token.json`.
-
-## Usage
 
 ```bash
 export HATENA_CONSUMER_KEY='your_key'
 export HATENA_CONSUMER_SECRET='your_secret'
 
+python get_hatena_token.py --token-file ./token.json --open-browser
+```
+
+### 2) Google OAuth token (Drive API)
+
+1. In Google Cloud Console, create an OAuth client ID for Desktop app.
+2. Use client ID/secret and run the helper script:
+
+```bash
+python get_google_token.py \
+  --client-id 'your_google_client_id' \
+  --client-secret 'your_google_client_secret' \
+  --token-file ./google_token.json \
+  --open-browser
+```
+
+Required API scope (minimum):
+
+- `https://www.googleapis.com/auth/drive.readonly`
+
+This scope is used to list and download Takeout ZIP files from Drive.
+
+## Usage
+
+```bash
+export HATENA_CONSUMER_KEY='your_hatena_key'
+export HATENA_CONSUMER_SECRET='your_hatena_secret'
+export GOOGLE_CLIENT_ID='your_google_client_id'
+export GOOGLE_CLIENT_SECRET='your_google_client_secret'
+
 python takeout_to_hatena.py \
-  --takeout-dir /path/to/gdrive/Takeout \
-  --token-file ./token.json
+  --drive-folder-id 'google_drive_folder_id' \
+  --token-file ./token.json \
+  --google-token-file ./google_token.json
 ```
 
 Custom state DB path:
 
 ```bash
-python takeout_to_hatena.py --takeout-dir /path/to/gdrive/Takeout --state-db ./state.sqlite3
+python takeout_to_hatena.py \
+  --drive-folder-id 'google_drive_folder_id' \
+  --state-db ./state.sqlite3
 ```
 
 Dry run:
 
 ```bash
-python takeout_to_hatena.py --takeout-dir /path/to/gdrive/Takeout --dry-run
+python takeout_to_hatena.py \
+  --drive-folder-id 'google_drive_folder_id' \
+  --dry-run
 ```
