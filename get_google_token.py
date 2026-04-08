@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import socket
 import sys
 import threading
@@ -67,8 +68,16 @@ class OAuthCallbackServer(ThreadingHTTPServer):
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--client-id", required=True, help="Google OAuth client ID.")
-    parser.add_argument("--client-secret", required=True, help="Google OAuth client secret.")
+    parser.add_argument(
+        "--client-id",
+        default=os.getenv("GOOGLE_CLIENT_ID"),
+        help="Google OAuth client ID. Defaults to GOOGLE_CLIENT_ID env var.",
+    )
+    parser.add_argument(
+        "--client-secret",
+        default=os.getenv("GOOGLE_CLIENT_SECRET"),
+        help="Google OAuth client secret. Defaults to GOOGLE_CLIENT_SECRET env var.",
+    )
     parser.add_argument(
         "--scope",
         default=DEFAULT_SCOPE,
@@ -91,7 +100,12 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Open authorization URL in your default browser automatically.",
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    if not args.client_id:
+        parser.error("--client-id is required (or set GOOGLE_CLIENT_ID).")
+    if not args.client_secret:
+        parser.error("--client-secret is required (or set GOOGLE_CLIENT_SECRET).")
+    return args
 
 
 def build_callback_server() -> tuple[OAuthCallbackServer, str]:
