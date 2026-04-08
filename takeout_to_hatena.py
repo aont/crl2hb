@@ -336,13 +336,10 @@ def list_takeout_zip_files(
     headers = {"Authorization": f"Bearer {access_token}"}
 
     while True:
-        query = (
-            f"'{folder_id}' in parents and trashed = false "
-            "and mimeType = 'application/zip' and name contains 'takeout-'"
-        )
+        query = f"'{folder_id}' in parents and trashed = false"
         params = {
             "q": query,
-            "fields": "nextPageToken, files(id,name,size,md5Checksum,modifiedTime)",
+            "fields": "nextPageToken, files(id,name,mimeType,size,md5Checksum,modifiedTime)",
             "orderBy": "modifiedTime desc",
             "pageSize": "100",
         }
@@ -357,7 +354,14 @@ def list_takeout_zip_files(
         )
         response.raise_for_status()
         payload = response.json()
-        files.extend(payload.get("files", []))
+        for item in payload.get("files", []):
+            name = str(item.get("name", ""))
+            mime_type = str(item.get("mimeType", ""))
+            if "takeout-" not in name.lower():
+                continue
+            if not name.lower().endswith(".zip") and mime_type not in {"application/zip", "application/x-zip-compressed"}:
+                continue
+            files.append(item)
         page_token = payload.get("nextPageToken")
         if not page_token:
             break
@@ -440,6 +444,8 @@ def main() -> int:
 
     state_db = open_state_db(args.state_db)
     processed_zip_signatures = load_processed_zip_signatures(state_db)
+    logging.debug("State DB: %s", args.state_db.resolve())
+    logging.debug("Loaded %d processed ZIP signatures", len(processed_zip_signatures))
 
     auth = make_auth(consumer_key, consumer_secret, token)
     created = 0
@@ -454,7 +460,9 @@ def main() -> int:
             args.google_token_file,
         )
         all_files = list_takeout_zip_files(session, access_token, args.drive_folder_id)
+        logging.debug("Found %d takeout ZIP candidate files in Drive folder", len(all_files))
         new_files = [f for f in all_files if drive_file_signature(f) not in processed_zip_signatures]
+        logging.debug("Detected %d new takeout ZIP files after state filter", len(new_files))
         if not new_files:
             logging.info("No new takeout ZIP files found in Drive folder %s", args.drive_folder_id)
             state_db.close()
