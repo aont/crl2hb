@@ -84,3 +84,23 @@ python takeout_to_hatena.py \
   --drive-folder-id 'google_drive_folder_id' \
   --dry-run
 ```
+
+
+## List files/folders in a Drive folder
+
+You can also list the immediate children (files and folders) of any Google Drive folder ID:
+
+```bash
+export GOOGLE_CLIENT_ID='your_google_client_id'
+export GOOGLE_CLIENT_SECRET='your_google_client_secret'
+
+python list_drive_folder.py \
+  --folder-id 'google_drive_folder_id' \
+  --google-token-file ./google_token.json
+```
+
+JSON output:
+
+```bash
+python list_drive_folder.py --folder-id 'google_drive_folder_id' --json
+```
