@@ -32,10 +32,11 @@ pip install httpx Authlib
 2. Obtain and save access tokens (`oauth_token`, `oauth_token_secret`) into `token.json`.
 
 ```bash
-export HATENA_CONSUMER_KEY='your_key'
-export HATENA_CONSUMER_SECRET='your_secret'
-
-python get_hatena_token.py --token-file ./token.json --open-browser
+python get_hatena_token.py \
+  --consumer-key 'your_hatena_key' \
+  --consumer-secret 'your_hatena_secret' \
+  --token-file ./token.json \
+  --open-browser
 ```
 
 ### 2) Google OAuth token (Drive API)
@@ -59,14 +60,22 @@ This scope is used to list and download Takeout ZIP files from Drive.
 
 ## Usage
 
-```bash
-export HATENA_CONSUMER_KEY='your_hatena_key'
-export HATENA_CONSUMER_SECRET='your_hatena_secret'
-export GOOGLE_CLIENT_ID='your_google_client_id'
-export GOOGLE_CLIENT_SECRET='your_google_client_secret'
+`takeout_to_hatena.py` reads OAuth client credentials from a TOML config file (default: `config.toml`):
 
+```toml
+[hatena]
+consumer_key = "your_hatena_key"
+consumer_secret = "your_hatena_secret"
+
+[google]
+client_id = "your_google_client_id"
+client_secret = "your_google_client_secret"
+```
+
+```bash
 python takeout_to_hatena.py \
-  --token-file ./token.json \
+  --config-file ./config.toml \
+  --hatena-token-file ./token.json \
   --google-token-file ./google_token.json
 ```
 
@@ -75,7 +84,7 @@ Explicit folder ID:
 ```bash
 python takeout_to_hatena.py \
   --drive-folder-id 'google_drive_folder_id' \
-  --token-file ./token.json \
+  --hatena-token-file ./token.json \
   --google-token-file ./google_token.json
 ```
 
@@ -99,10 +108,9 @@ python takeout_to_hatena.py \
 You can also list the immediate children (files and folders) of any Google Drive folder ID:
 
 ```bash
-export GOOGLE_CLIENT_ID='your_google_client_id'
-export GOOGLE_CLIENT_SECRET='your_google_client_secret'
-
 python list_drive_folder.py \
+  --google-client-id 'your_google_client_id' \
+  --google-client-secret 'your_google_client_secret' \
   --folder-id 'google_drive_folder_id' \
   --google-token-file ./google_token.json
 ```

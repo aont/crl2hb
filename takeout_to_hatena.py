@@ -20,7 +20,6 @@ import html.parser
 import io
 import json
 import logging
-import os
 from pathlib import Path
 import sqlite3
 import time
@@ -30,6 +29,7 @@ import zipfile
 
 import httpx
 from authlib.integrations.httpx_client import OAuth1Auth
+import tomllib
 
 HATENA_BOOKMARK_API = "https://bookmark.hatenaapis.com/rest/1/my/bookmark"
 READING_LIST_HTML = "Takeout/Chrome/リーディング リスト.html"
@@ -57,6 +57,12 @@ class AnchorExtractor(html.parser.HTMLParser):
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
+        "--config-file",
+        type=Path,
+        default=Path("config.toml"),
+        help="Path to TOML config file containing OAuth client credentials.",
+    )
+    parser.add_argument(
         "--drive-folder-id",
         default=None,
         help=(
@@ -71,30 +77,10 @@ def parse_args() -> argparse.Namespace:
         help="Path to Google OAuth token JSON.",
     )
     parser.add_argument(
-        "--google-client-id",
-        default=None,
-        help="Google OAuth client ID (defaults to GOOGLE_CLIENT_ID env if set).",
-    )
-    parser.add_argument(
-        "--google-client-secret",
-        default=None,
-        help="Google OAuth client secret (defaults to GOOGLE_CLIENT_SECRET env if set).",
-    )
-    parser.add_argument(
-        "--token-file",
+        "--hatena-token-file",
         type=Path,
         default=Path("token.json"),
         help="Path to Hatena OAuth token JSON.",
-    )
-    parser.add_argument(
-        "--consumer-key",
-        default=None,
-        help="Hatena OAuth consumer key (defaults to HATENA_CONSUMER_KEY env if set).",
-    )
-    parser.add_argument(
-        "--consumer-secret",
-        default=None,
-        help="Hatena OAuth consumer secret (defaults to HATENA_CONSUMER_SECRET env if set).",
     )
     parser.add_argument(
         "--state-db",
@@ -112,6 +98,37 @@ def load_json(path: Path, default: dict) -> dict:
         return default
     with path.open("r", encoding="utf-8") as fp:
         return json.load(fp)
+
+
+def load_config(path: Path) -> dict:
+    if not path.exists():
+        raise SystemExit(
+            f"Config file not found: {path}. "
+            "Create a TOML config file with [hatena] and [google] credentials."
+        )
+    with path.open("rb") as fp:
+        return tomllib.load(fp)
+
+
+def resolve_credentials(config: dict) -> tuple[str, str, str, str]:
+    hatena = config.get("hatena", {})
+    google = config.get("google", {})
+    consumer_key = str(hatena.get("consumer_key", "")).strip()
+    consumer_secret = str(hatena.get("consumer_secret", "")).strip()
+    google_client_id = str(google.get("client_id", "")).strip()
+    google_client_secret = str(google.get("client_secret", "")).strip()
+
+    if not consumer_key or not consumer_secret:
+        raise SystemExit(
+            "Missing Hatena credentials in config TOML. "
+            "Set [hatena].consumer_key and [hatena].consumer_secret."
+        )
+    if not google_client_id or not google_client_secret:
+        raise SystemExit(
+            "Missing Google credentials in config TOML. "
+            "Set [google].client_id and [google].client_secret."
+        )
+    return consumer_key, consumer_secret, google_client_id, google_client_secret
 
 
 def save_json(path: Path, data: dict) -> None:
@@ -451,25 +468,12 @@ def main() -> int:
         logging.getLogger("httpx").setLevel(logging.WARNING)
         logging.getLogger("httpcore").setLevel(logging.WARNING)
 
-    consumer_key = args.consumer_key or os.getenv("HATENA_CONSUMER_KEY", "")
-    consumer_secret = args.consumer_secret or os.getenv("HATENA_CONSUMER_SECRET", "")
-    if not consumer_key or not consumer_secret:
-        raise SystemExit(
-            "Missing consumer key/secret. Pass --consumer-key/--consumer-secret "
-            "or set HATENA_CONSUMER_KEY/HATENA_CONSUMER_SECRET."
-        )
+    config = load_config(args.config_file)
+    consumer_key, consumer_secret, google_client_id, google_client_secret = resolve_credentials(config)
 
-    google_client_id = args.google_client_id or os.getenv("GOOGLE_CLIENT_ID", "")
-    google_client_secret = args.google_client_secret or os.getenv("GOOGLE_CLIENT_SECRET", "")
-    if not google_client_id or not google_client_secret:
-        raise SystemExit(
-            "Missing Google client ID/secret. Pass --google-client-id/--google-client-secret "
-            "or set GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET."
-        )
-
-    token = load_json(args.token_file, default={})
+    token = load_json(args.hatena_token_file, default={})
     if "oauth_token" not in token or "oauth_token_secret" not in token:
-        raise SystemExit(f"Invalid Hatena token file: {args.token_file}")
+        raise SystemExit(f"Invalid Hatena token file: {args.hatena_token_file}")
 
     google_token = load_json(args.google_token_file, default={})
     if "access_token" not in google_token and "refresh_token" not in google_token:
