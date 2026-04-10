@@ -123,15 +123,42 @@ def resolve_credentials(config: dict) -> tuple[str, str, str, str]:
     return consumer_key, consumer_secret, google_client_id, google_client_secret
 
 
-def resolve_drive_folder_id(config: dict) -> str:
+def resolve_drive_folder_id(config: dict) -> str | None:
     google = config.get("google", {})
     drive_folder_id = str(google.get("drive_folder_id", "")).strip()
     if not drive_folder_id:
-        raise SystemExit(
-            "Missing Google Drive folder ID in config TOML. "
-            "Set [google].drive_folder_id."
-        )
+        return None
     return drive_folder_id
+
+
+def find_takeout_folder_id(session: httpx.Client, access_token: str) -> str:
+    """Find `/Takeout` directly under My Drive root and return its folder ID."""
+    headers = {"Authorization": f"Bearer {access_token}"}
+    params = {
+        "q": (
+            "name = 'Takeout' and "
+            "mimeType = 'application/vnd.google-apps.folder' and "
+            "'root' in parents and trashed = false"
+        ),
+        "fields": "files(id,name,modifiedTime)",
+        "orderBy": "modifiedTime desc",
+        "pageSize": "10",
+    }
+    response = session.get(GOOGLE_DRIVE_FILES_API, params=params, headers=headers, timeout=20)
+    response.raise_for_status()
+    files = response.json().get("files", [])
+    if not files:
+        raise SystemExit(
+            "Google Drive folder ID is not configured and /Takeout was not found under "
+            "My Drive root. Set [google].drive_folder_id or create /Takeout."
+        )
+    if len(files) > 1:
+        logging.warning(
+            "Multiple /Takeout folders found under My Drive root. Using the most recent one: %s (%s)",
+            files[0].get("name", "Takeout"),
+            files[0].get("id", "-"),
+        )
+    return str(files[0]["id"])
 
 
 def save_json(path: Path, data: dict) -> None:
@@ -440,7 +467,7 @@ def main() -> int:
 
     config = load_config(args.config_file)
     consumer_key, consumer_secret, google_client_id, google_client_secret = resolve_credentials(config)
-    drive_folder_id = resolve_drive_folder_id(config)
+    configured_drive_folder_id = resolve_drive_folder_id(config)
 
     token = load_json(args.hatena_token_file, default={})
     if "oauth_token" not in token or "oauth_token_secret" not in token:
@@ -470,6 +497,11 @@ def main() -> int:
             google_client_secret,
             args.google_token_file,
         )
+        if configured_drive_folder_id:
+            drive_folder_id = configured_drive_folder_id
+        else:
+            drive_folder_id = find_takeout_folder_id(session, access_token)
+            logging.info("Using /Takeout under My Drive root: %s", drive_folder_id)
         all_files = list_takeout_zip_files(session, access_token, drive_folder_id)
         logging.debug("Found %d takeout ZIP candidate files in Drive folder", len(all_files))
         new_files = [f for f in all_files if drive_file_signature(f) not in processed_zip_signatures]

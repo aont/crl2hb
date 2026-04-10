@@ -68,6 +68,7 @@ consumer_secret = "your_hatena_secret"
 [google]
 client_id = "your_google_client_id"
 client_secret = "your_google_client_secret"
+# Optional: if omitted, /Takeout directly under My Drive root is used.
 drive_folder_id = "your_google_drive_folder_id"
 ```
 
