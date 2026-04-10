@@ -58,8 +58,11 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--drive-folder-id",
-        required=True,
-        help="Google Drive folder ID that contains takeout-*.zip files.",
+        default=None,
+        help=(
+            "Google Drive folder ID that contains takeout-*.zip files. "
+            "If omitted, this script searches My Drive root for a folder named 'Takeout'."
+        ),
     )
     parser.add_argument(
         "--google-token-file",
@@ -369,6 +372,39 @@ def list_takeout_zip_files(
     return files
 
 
+def find_takeout_folder_id_under_root(session: httpx.Client, access_token: str) -> str:
+    headers = {"Authorization": f"Bearer {access_token}"}
+    params = {
+        "q": (
+            "'root' in parents and trashed = false and "
+            "mimeType = 'application/vnd.google-apps.folder' and name = 'Takeout'"
+        ),
+        "fields": "files(id,name,modifiedTime), nextPageToken",
+        "orderBy": "modifiedTime desc",
+        "pageSize": "10",
+    }
+    response = session.get(
+        GOOGLE_DRIVE_FILES_API,
+        params=params,
+        headers=headers,
+        timeout=20,
+    )
+    response.raise_for_status()
+    files = response.json().get("files", [])
+    if not files:
+        raise SystemExit(
+            "Could not find folder named 'Takeout' directly under My Drive root. "
+            "Specify --drive-folder-id explicitly."
+        )
+    if len(files) > 1:
+        logging.warning(
+            "Multiple 'Takeout' folders found under root. Using most recently modified: %s (%s)",
+            files[0].get("name", "Takeout"),
+            files[0].get("id", "-"),
+        )
+    return str(files[0]["id"])
+
+
 def download_drive_file(session: httpx.Client, access_token: str, file_id: str) -> bytes:
     headers = {"Authorization": f"Bearer {access_token}"}
     response = session.get(
@@ -459,12 +495,20 @@ def main() -> int:
             google_client_secret,
             args.google_token_file,
         )
-        all_files = list_takeout_zip_files(session, access_token, args.drive_folder_id)
+        drive_folder_id = args.drive_folder_id
+        if not drive_folder_id:
+            drive_folder_id = find_takeout_folder_id_under_root(session, access_token)
+            logging.info(
+                "Using auto-detected Drive folder 'Takeout' under root: %s",
+                drive_folder_id,
+            )
+
+        all_files = list_takeout_zip_files(session, access_token, drive_folder_id)
         logging.debug("Found %d takeout ZIP candidate files in Drive folder", len(all_files))
         new_files = [f for f in all_files if drive_file_signature(f) not in processed_zip_signatures]
         logging.debug("Detected %d new takeout ZIP files after state filter", len(new_files))
         if not new_files:
-            logging.info("No new takeout ZIP files found in Drive folder %s", args.drive_folder_id)
+            logging.info("No new takeout ZIP files found in Drive folder %s", drive_folder_id)
             state_db.close()
             return 0
 

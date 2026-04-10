@@ -5,6 +5,8 @@
 ## What it does
 
 - Lists ZIP files matching `takeout-*.zip` from a specified Google Drive folder.
+  - If folder ID is omitted, it automatically searches for a folder named `Takeout`
+    directly under **My Drive root** and uses that folder.
 - Downloads each new ZIP directly through Google Drive API.
 - Reads `Takeout/Chrome/リーディング リスト.html` inside each ZIP.
 - Extracts URLs from `<A HREF="...">...</A>`.
@@ -64,6 +66,14 @@ export GOOGLE_CLIENT_ID='your_google_client_id'
 export GOOGLE_CLIENT_SECRET='your_google_client_secret'
 
 python takeout_to_hatena.py \
+  --token-file ./token.json \
+  --google-token-file ./google_token.json
+```
+
+Explicit folder ID:
+
+```bash
+python takeout_to_hatena.py \
   --drive-folder-id 'google_drive_folder_id' \
   --token-file ./token.json \
   --google-token-file ./google_token.json
@@ -73,7 +83,6 @@ Custom state DB path:
 
 ```bash
 python takeout_to_hatena.py \
-  --drive-folder-id 'google_drive_folder_id' \
   --state-db ./state.sqlite3
 ```
 
@@ -81,7 +90,6 @@ Dry run:
 
 ```bash
 python takeout_to_hatena.py \
-  --drive-folder-id 'google_drive_folder_id' \
   --dry-run
 ```
 
