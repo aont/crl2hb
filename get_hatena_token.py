@@ -32,7 +32,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--token-file",
         type=Path,
-        default=Path("token.json"),
+        default=Path("hatena_token.json"),
         help="Destination path for the generated token JSON.",
     )
     parser.add_argument(

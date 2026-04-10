@@ -71,7 +71,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--hatena-token-file",
         type=Path,
-        default=Path("token.json"),
+        default=Path("hatena_token.json"),
         help="Path to Hatena OAuth token JSON.",
     )
     parser.add_argument(
