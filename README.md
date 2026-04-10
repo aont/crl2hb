@@ -33,8 +33,7 @@ pip install httpx Authlib
 
 ```bash
 python get_hatena_token.py \
-  --consumer-key 'your_hatena_key' \
-  --consumer-secret 'your_hatena_secret' \
+  --config-file ./config.toml \
   --token-file ./token.json \
   --open-browser
 ```
@@ -46,8 +45,7 @@ python get_hatena_token.py \
 
 ```bash
 python get_google_token.py \
-  --client-id 'your_google_client_id' \
-  --client-secret 'your_google_client_secret' \
+  --config-file ./config.toml \
   --token-file ./google_token.json \
   --open-browser
 ```
@@ -70,20 +68,12 @@ consumer_secret = "your_hatena_secret"
 [google]
 client_id = "your_google_client_id"
 client_secret = "your_google_client_secret"
+drive_folder_id = "your_google_drive_folder_id"
 ```
 
 ```bash
 python takeout_to_hatena.py \
   --config-file ./config.toml \
-  --hatena-token-file ./token.json \
-  --google-token-file ./google_token.json
-```
-
-Explicit folder ID:
-
-```bash
-python takeout_to_hatena.py \
-  --drive-folder-id 'google_drive_folder_id' \
   --hatena-token-file ./token.json \
   --google-token-file ./google_token.json
 ```
@@ -109,8 +99,7 @@ You can also list the immediate children (files and folders) of any Google Drive
 
 ```bash
 python list_drive_folder.py \
-  --google-client-id 'your_google_client_id' \
-  --google-client-secret 'your_google_client_secret' \
+  --config-file ./config.toml \
   --folder-id 'google_drive_folder_id' \
   --google-token-file ./google_token.json
 ```

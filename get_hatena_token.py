@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import socket
 import sys
 import threading
@@ -15,6 +14,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from authlib.integrations.httpx_client import OAuth1Client
+import tomllib
 
 REQUEST_TOKEN_URL = "https://www.hatena.com/oauth/initiate"
 AUTHORIZE_URL = "https://www.hatena.ne.jp/oauth/authorize"
@@ -24,14 +24,10 @@ ACCESS_TOKEN_URL = "https://www.hatena.com/oauth/token"
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--consumer-key",
-        default=None,
-        help="Hatena OAuth consumer key (defaults to HATENA_CONSUMER_KEY env).",
-    )
-    parser.add_argument(
-        "--consumer-secret",
-        default=None,
-        help="Hatena OAuth consumer secret (defaults to HATENA_CONSUMER_SECRET env).",
+        "--config-file",
+        type=Path,
+        default=Path("config.toml"),
+        help="Path to TOML config file containing Hatena OAuth client credentials.",
     )
     parser.add_argument(
         "--token-file",
@@ -66,13 +62,24 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def resolve_credentials(args: argparse.Namespace) -> tuple[str, str]:
-    consumer_key = args.consumer_key or os.getenv("HATENA_CONSUMER_KEY", "")
-    consumer_secret = args.consumer_secret or os.getenv("HATENA_CONSUMER_SECRET", "")
+def load_config(path: Path) -> dict:
+    if not path.exists():
+        raise SystemExit(
+            f"Config file not found: {path}. "
+            "Create a TOML config file with [hatena] credentials."
+        )
+    with path.open("rb") as fp:
+        return tomllib.load(fp)
+
+
+def resolve_credentials(config: dict) -> tuple[str, str]:
+    hatena = config.get("hatena", {})
+    consumer_key = str(hatena.get("consumer_key", "")).strip()
+    consumer_secret = str(hatena.get("consumer_secret", "")).strip()
     if not consumer_key or not consumer_secret:
         raise SystemExit(
-            "Missing consumer key/secret. Pass --consumer-key/--consumer-secret "
-            "or set HATENA_CONSUMER_KEY/HATENA_CONSUMER_SECRET."
+            "Missing Hatena credentials in config TOML. "
+            "Set [hatena].consumer_key and [hatena].consumer_secret."
         )
     return consumer_key, consumer_secret
 
@@ -159,7 +166,8 @@ def wait_for_verifier(server: OAuthCallbackServer, timeout: int) -> str:
 
 def main() -> int:
     args = parse_args()
-    consumer_key, consumer_secret = resolve_credentials(args)
+    config = load_config(args.config_file)
+    consumer_key, consumer_secret = resolve_credentials(config)
     callback_server: OAuthCallbackServer | None = None
     redirect_uri = args.callback
     if args.callback == "auto":

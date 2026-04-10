@@ -5,11 +5,11 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 from pathlib import Path
 import time
 
 import httpx
+import tomllib
 
 GOOGLE_DRIVE_FILES_API = "https://www.googleapis.com/drive/v3/files"
 GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
@@ -20,20 +20,16 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--folder-id", required=True, help="Google Drive folder ID to list.")
     parser.add_argument(
+        "--config-file",
+        type=Path,
+        default=Path("config.toml"),
+        help="Path to TOML config file containing Google OAuth client credentials.",
+    )
+    parser.add_argument(
         "--google-token-file",
         type=Path,
         default=Path("google_token.json"),
         help="Path to Google OAuth token JSON.",
-    )
-    parser.add_argument(
-        "--google-client-id",
-        default=None,
-        help="Google OAuth client ID (defaults to GOOGLE_CLIENT_ID env if set).",
-    )
-    parser.add_argument(
-        "--google-client-secret",
-        default=None,
-        help="Google OAuth client secret (defaults to GOOGLE_CLIENT_SECRET env if set).",
     )
     parser.add_argument(
         "--json",
@@ -48,6 +44,28 @@ def load_json(path: Path, default: dict) -> dict:
         return default
     with path.open("r", encoding="utf-8") as fp:
         return json.load(fp)
+
+
+def load_config(path: Path) -> dict:
+    if not path.exists():
+        raise SystemExit(
+            f"Config file not found: {path}. "
+            "Create a TOML config file with [google] credentials."
+        )
+    with path.open("rb") as fp:
+        return tomllib.load(fp)
+
+
+def resolve_google_credentials(config: dict) -> tuple[str, str]:
+    google = config.get("google", {})
+    client_id = str(google.get("client_id", "")).strip()
+    client_secret = str(google.get("client_secret", "")).strip()
+    if not client_id or not client_secret:
+        raise SystemExit(
+            "Missing Google credentials in config TOML. "
+            "Set [google].client_id and [google].client_secret."
+        )
+    return client_id, client_secret
 
 
 def save_json(path: Path, data: dict) -> None:
@@ -147,13 +165,8 @@ def print_table(items: list[dict]) -> None:
 def main() -> int:
     args = parse_args()
 
-    google_client_id = args.google_client_id or os.getenv("GOOGLE_CLIENT_ID", "")
-    google_client_secret = args.google_client_secret or os.getenv("GOOGLE_CLIENT_SECRET", "")
-    if not google_client_id or not google_client_secret:
-        raise SystemExit(
-            "Missing Google client ID/secret. Pass --google-client-id/--google-client-secret "
-            "or set GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET."
-        )
+    config = load_config(args.config_file)
+    google_client_id, google_client_secret = resolve_google_credentials(config)
 
     google_token = load_json(args.google_token_file, default={})
     if "access_token" not in google_token and "refresh_token" not in google_token:

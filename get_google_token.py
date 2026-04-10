@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import socket
 import sys
 import threading
@@ -16,6 +15,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import httpx
+import tomllib
 
 AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
@@ -69,14 +69,10 @@ class OAuthCallbackServer(ThreadingHTTPServer):
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--client-id",
-        default=os.getenv("GOOGLE_CLIENT_ID"),
-        help="Google OAuth client ID. Defaults to GOOGLE_CLIENT_ID env var.",
-    )
-    parser.add_argument(
-        "--client-secret",
-        default=os.getenv("GOOGLE_CLIENT_SECRET"),
-        help="Google OAuth client secret. Defaults to GOOGLE_CLIENT_SECRET env var.",
+        "--config-file",
+        type=Path,
+        default=Path("config.toml"),
+        help="Path to TOML config file containing Google OAuth client credentials.",
     )
     parser.add_argument(
         "--scope",
@@ -100,12 +96,29 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Open authorization URL in your default browser automatically.",
     )
-    args = parser.parse_args()
-    if not args.client_id:
-        parser.error("--client-id is required (or set GOOGLE_CLIENT_ID).")
-    if not args.client_secret:
-        parser.error("--client-secret is required (or set GOOGLE_CLIENT_SECRET).")
-    return args
+    return parser.parse_args()
+
+
+def load_config(path: Path) -> dict:
+    if not path.exists():
+        raise SystemExit(
+            f"Config file not found: {path}. "
+            "Create a TOML config file with [google] credentials."
+        )
+    with path.open("rb") as fp:
+        return tomllib.load(fp)
+
+
+def resolve_google_credentials(config: dict) -> tuple[str, str]:
+    google = config.get("google", {})
+    client_id = str(google.get("client_id", "")).strip()
+    client_secret = str(google.get("client_secret", "")).strip()
+    if not client_id or not client_secret:
+        raise SystemExit(
+            "Missing Google credentials in config TOML. "
+            "Set [google].client_id and [google].client_secret."
+        )
+    return client_id, client_secret
 
 
 def build_callback_server() -> tuple[OAuthCallbackServer, str]:
@@ -143,10 +156,12 @@ def save_token(path: Path, token: dict) -> None:
 
 def main() -> int:
     args = parse_args()
+    config = load_config(args.config_file)
+    client_id, client_secret = resolve_google_credentials(config)
     callback_server, redirect_uri = build_callback_server()
 
     auth_params = {
-        "client_id": args.client_id,
+        "client_id": client_id,
         "redirect_uri": redirect_uri,
         "response_type": "code",
         "scope": args.scope,
@@ -169,8 +184,8 @@ def main() -> int:
         TOKEN_URL,
         data={
             "code": code,
-            "client_id": args.client_id,
-            "client_secret": args.client_secret,
+            "client_id": client_id,
+            "client_secret": client_secret,
             "redirect_uri": redirect_uri,
             "grant_type": "authorization_code",
         },
